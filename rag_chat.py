@@ -27,6 +27,41 @@ DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_TEXT_FIELDS = "text,content,chunk,document,page_content"
 
 
+def _truncate(text: str, limit: int = 1200) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...<truncated>"
+
+
+def _payload_preview(payload: dict) -> str:
+    try:
+        return _truncate(json.dumps(payload, ensure_ascii=True))
+    except (TypeError, ValueError):
+        return "<unserializable payload>"
+
+
+def format_http_error(
+    exc: urllib.error.HTTPError,
+    method: str,
+    url: str,
+    payload: Optional[dict] = None,
+) -> str:
+    body = ""
+    try:
+        body = exc.read().decode("utf-8", errors="ignore")
+    except OSError:
+        body = ""
+    body = _truncate(body) if body else "<empty>"
+    pieces = [
+        f"{method} {url}",
+        f"status={exc.code} reason={exc.reason}",
+    ]
+    if payload is not None:
+        pieces.append(f"payload={_payload_preview(payload)}")
+    pieces.append(f"response={body}")
+    return "HTTP request failed: " + " | ".join(pieces)
+
+
 def load_dotenv(path: Path) -> Dict[str, str]:
     """Load key=value pairs from a .env file."""
     if not path.exists():
@@ -66,16 +101,38 @@ def post_json(url: str, payload: dict, headers: Optional[dict] = None, timeout_s
         headers=req_headers,
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        body = resp.read().decode("utf-8", errors="ignore")
-    return json.loads(body)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(format_http_error(exc, "POST", url, payload)) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Network error for POST {url}: {exc}") from exc
+
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Invalid JSON response for POST {url}: {_truncate(body)}"
+        ) from exc
 
 
 def get_json(url: str, headers: Optional[dict] = None, timeout_s: int = 120) -> dict:
     req = urllib.request.Request(url, headers=headers or {}, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        body = resp.read().decode("utf-8", errors="ignore")
-    return json.loads(body)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(format_http_error(exc, "GET", url, None)) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Network error for GET {url}: {exc}") from exc
+
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Invalid JSON response for GET {url}: {_truncate(body)}"
+        ) from exc
 
 
 def ollama_base_url(api_url: str) -> str:
@@ -288,26 +345,11 @@ def call_ollama(
         "stream": False,
         "options": {"temperature": temperature},
     }
-    req = urllib.request.Request(
-        ollama_url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            body = resp.read().decode("utf-8", errors="ignore")
-    except urllib.error.URLError as exc:
-        raise RuntimeError(
-            f"Could not reach Ollama at {ollama_url}. Is Ollama running? ({exc})"
-        ) from exc
-
-    try:
-        data = json.loads(body)
+        data = post_json(ollama_url, payload, timeout_s=timeout_s)
         return data["message"]["content"]
-    except (KeyError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Unexpected Ollama response: {body[:500]}") from exc
+    except KeyError as exc:
+        raise RuntimeError(f"Unexpected Ollama response shape: {data}") from exc
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -389,10 +431,7 @@ def main(argv: Sequence[str]) -> int:
             limit=top_k,
             text_fields=text_fields,
         )
-    except urllib.error.URLError as exc:
-        print(f"Network/API error: {exc}", file=sys.stderr)
-        return 1
-    except (json.JSONDecodeError, RuntimeError) as exc:
+    except RuntimeError as exc:
         print(f"Failed to retrieve RAG context: {exc}", file=sys.stderr)
         return 1
 
