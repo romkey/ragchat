@@ -73,6 +73,7 @@ python rag_chat.py "your question" \
 
 - The script generates the question embedding via Ollama, then uses vector search in each Qdrant collection.
 - The script checks whether chat/embedding models exist on the configured Ollama server and fails with a clear install command if missing.
+- For proxied Ollama endpoints that do not expose management APIs (`/api/show` or `/api/tags`), model preflight becomes best-effort and the script continues to normal query execution.
 - `QDRANT_TEXT_FIELDS` controls which payload fields are checked for text context (first matching string is used).
 - CLI flags override `.env` values when both are present.
 - Use `--show-context` to inspect selected chunks from each collection.

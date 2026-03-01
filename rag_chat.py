@@ -71,6 +71,13 @@ def post_json(url: str, payload: dict, headers: Optional[dict] = None, timeout_s
     return json.loads(body)
 
 
+def get_json(url: str, headers: Optional[dict] = None, timeout_s: int = 120) -> dict:
+    req = urllib.request.Request(url, headers=headers or {}, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        body = resp.read().decode("utf-8", errors="ignore")
+    return json.loads(body)
+
+
 def ollama_base_url(api_url: str) -> str:
     """Extract base URL (scheme://host:port) from an Ollama API endpoint URL."""
     parsed = urllib.parse.urlsplit(api_url)
@@ -84,15 +91,52 @@ def ensure_ollama_model(model: str, api_url: str) -> None:
     """
     Ensure Ollama model exists on the target Ollama server.
     This function does not pull models automatically.
+    It is best-effort so proxied endpoints that only expose chat/embed don't fail early.
     """
     base_url = ollama_base_url(api_url)
     show_url = f"{base_url}/api/show"
+    tags_url = f"{base_url}/api/tags"
+    candidates = [model]
+    if ":" not in model:
+        candidates.append(f"{model}:latest")
 
-    try:
-        post_json(show_url, {"model": model}, timeout_s=60)
-        return
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
+    # First: strong check via /api/show with common name variants.
+    saw_404 = False
+    for candidate in candidates:
+        try:
+            post_json(show_url, {"model": candidate}, timeout_s=60)
+            return
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                saw_404 = True
+                continue
+            # Non-404 means endpoint exists but errored; surface it.
+            raise RuntimeError(f"Failed checking Ollama model '{candidate}': HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            # Can't reach server at all: that's a real connectivity error.
+            raise RuntimeError(f"Could not reach Ollama at {base_url}: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Unexpected response from Ollama while checking model '{candidate}'"
+            ) from exc
+
+    # If /api/show says missing, verify via /api/tags before failing.
+    if saw_404:
+        try:
+            tags_data = get_json(tags_url, timeout_s=60)
+            models = tags_data.get("models", [])
+            names: List[str] = []
+            if isinstance(models, list):
+                for item in models:
+                    if isinstance(item, dict):
+                        name = item.get("name")
+                        if isinstance(name, str):
+                            names.append(name)
+            wanted_base = model.split(":", 1)[0]
+            for name in names:
+                if name in candidates or name.split(":", 1)[0] == wanted_base:
+                    return
+
             raise RuntimeError(
                 textwrap.dedent(
                     f"""
@@ -105,12 +149,20 @@ def ensure_ollama_model(model: str, api_url: str) -> None:
                     If this is a remote/containerized Ollama instance, run the pull command in that environment.
                     """
                 ).strip()
-            ) from exc
-        raise RuntimeError(f"Failed checking Ollama model '{model}': HTTP {exc.code}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Could not reach Ollama at {base_url}: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Unexpected response from Ollama while checking model '{model}'") from exc
+            )
+        except urllib.error.HTTPError:
+            # Proxies often expose chat/embed but not management endpoints.
+            print(
+                f"Warning: could not verify model '{model}' via {tags_url}; continuing without preflight verification.",
+                file=sys.stderr,
+            )
+            return
+        except (urllib.error.URLError, json.JSONDecodeError):
+            print(
+                f"Warning: model verification endpoint unavailable for '{model}'; continuing.",
+                file=sys.stderr,
+            )
+            return
 
 
 def ollama_embed(question: str, embed_model: str, embed_url: str, timeout_s: int = 120) -> List[float]:
