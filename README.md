@@ -38,7 +38,14 @@ QDRANT_LIMIT=3
 QDRANT_TEXT_FIELDS=text,content,chunk,document,page_content
 ```
 
-3. Run:
+3. Pull required models on the Ollama server:
+
+```bash
+ollama pull llama3.2
+ollama pull nomic-embed-text
+```
+
+4. Run:
 
 ```bash
 python rag_chat.py "What are the main differences between source A and source B?"
@@ -65,7 +72,7 @@ python rag_chat.py "your question" \
 ## Notes
 
 - The script generates the question embedding via Ollama, then uses vector search in each Qdrant collection.
-- The script auto-checks Ollama models and pulls missing chat/embedding models before answering.
+- The script checks whether chat/embedding models exist on the configured Ollama server and fails with a clear install command if missing.
 - `QDRANT_TEXT_FIELDS` controls which payload fields are checked for text context (first matching string is used).
 - CLI flags override `.env` values when both are present.
 - Use `--show-context` to inspect selected chunks from each collection.

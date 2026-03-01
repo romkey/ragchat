@@ -82,31 +82,35 @@ def ollama_base_url(api_url: str) -> str:
 
 def ensure_ollama_model(model: str, api_url: str) -> None:
     """
-    Ensure Ollama model exists locally; pull it only if missing.
-    Uses /api/show to check and /api/pull to download when needed.
+    Ensure Ollama model exists on the target Ollama server.
+    This function does not pull models automatically.
     """
     base_url = ollama_base_url(api_url)
     show_url = f"{base_url}/api/show"
-    pull_url = f"{base_url}/api/pull"
 
     try:
         post_json(show_url, {"model": model}, timeout_s=60)
         return
     except urllib.error.HTTPError as exc:
-        if exc.code != 404:
-            raise RuntimeError(f"Failed checking Ollama model '{model}': HTTP {exc.code}") from exc
+        if exc.code == 404:
+            raise RuntimeError(
+                textwrap.dedent(
+                    f"""
+                    Required Ollama model '{model}' is not installed on the configured Ollama server.
+                    Configured endpoint: {api_url}
+
+                    Install it on that Ollama server, then rerun:
+                      ollama pull {model}
+
+                    If this is a remote/containerized Ollama instance, run the pull command in that environment.
+                    """
+                ).strip()
+            ) from exc
+        raise RuntimeError(f"Failed checking Ollama model '{model}': HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Could not reach Ollama at {base_url}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Unexpected response from Ollama while checking model '{model}'") from exc
-
-    print(f"Ollama model '{model}' not found locally; pulling...", file=sys.stderr)
-    try:
-        post_json(pull_url, {"model": model, "stream": False}, timeout_s=1800)
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Failed pulling Ollama model '{model}': {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Unexpected response while pulling model '{model}'") from exc
 
 
 def ollama_embed(question: str, embed_model: str, embed_url: str, timeout_s: int = 120) -> List[float]:
