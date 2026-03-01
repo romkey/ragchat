@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import textwrap
@@ -48,6 +49,10 @@ def load_dotenv(path: Path) -> Dict[str, str]:
 def config_value(cli_value: Optional[str], env: Dict[str, str], key: str, default: str) -> str:
     if cli_value:
         return cli_value
+    # Support docker-compose env_file and normal exported environment variables.
+    runtime_value = os.environ.get(key, "")
+    if runtime_value:
+        return runtime_value
     return env.get(key, default)
 
 
