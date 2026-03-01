@@ -1,0 +1,36 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  rag-chat:
+    build:
+      context: .
+    depends_on:
+      - qdrant
+      - ollama
+    env_file:
+      - .env
+    environment:
+      # Use service names over Docker network instead of localhost.
+      OLLAMA_CHAT_URL: http://ollama:11434/api/chat
+      OLLAMA_EMBED_URL: http://ollama:11434/api/embed
+      QDRANT_URL: http://qdrant:6333
+    # Replace this question or override at runtime:
+    # docker compose run --rm rag-chat "your question"
+    command: ["What can you tell me from both collections?"]
+    restart: "no"
+
+volumes:
+  qdrant_storage:
+  ollama_data:
